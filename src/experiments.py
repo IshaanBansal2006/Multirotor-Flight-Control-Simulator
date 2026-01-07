@@ -78,6 +78,8 @@ def get_experiment(name: str) -> Experiment:
     """
     experiments = {
         "nominal_hover": create_nominal_hover(),
+        "hover_with_sensor_noise": create_hover_with_sensor_noise(),
+        "lateral_step_xy": create_lateral_step_xy(),
         "wind_gust_left": create_wind_gust_left(),
         "wind_gust_right": create_wind_gust_right(),
         "wind_gust_front": create_wind_gust_front(),
@@ -95,6 +97,8 @@ def list_experiments():
     """List all available experiments."""
     return [
         "nominal_hover",
+        "hover_with_sensor_noise",
+        "lateral_step_xy",
         "wind_gust_left",
         "wind_gust_right",
         "wind_gust_front",
@@ -136,36 +140,73 @@ def create_nominal_hover() -> Experiment:
     )
 
 
-def create_aggressive_controller() -> Experiment:
+def create_hover_with_sensor_noise() -> Experiment:
     """
-    Aggressive Controller Experiment
+    Hover with Sensor Noise Experiment
     
-    Demonstrates: High proportional gain with low damping causes overshoot and oscillation.
-    Expected: Fast initial response but significant overshoot and oscillation.
+    Demonstrates: Effect of noisy measurements on a well-tuned controller.
+    Expected: Small jitter in attitude/position but overall stable hover.
     """
     return Experiment(
-        name="aggressive_controller",
-        description="High-gain controller with low damping",
+        name="hover_with_sensor_noise",
+        description="Stable hover with moderate sensor noise enabled",
         controller_type="pid",
         control_gains={
-            "kp_pos": np.array([6.0, 6.0, 10.0]),  # High proportional gain
-            "ki_pos": np.array([0.2, 0.2, 0.8]),
-            "kd_pos": np.array([0.2, 0.2, 1.0]),  # Low damping
-            "kp_att": np.array([15.0, 15.0, 8.0]),
-            "ki_att": np.array([1.0, 1.0, 0.5]),
-            "kd_att": np.array([0.5, 0.5, 0.3]),  # Low damping
-            "kp_rate": np.array([0.4, 0.4, 0.3]),
-            "ki_rate": np.array([0.05, 0.05, 0.03]),
-            "kd_rate": np.array([0.05, 0.05, 0.03]),  # Low damping
+            "kp_pos": np.array([2.0, 2.0, 5.0]),
+            "ki_pos": np.array([0.1, 0.1, 0.4]),
+            "kd_pos": np.array([0.5, 0.5, 2.0]),
+            "kp_att": np.array([8.0, 8.0, 5.0]),
+            "ki_att": np.array([0.5, 0.5, 0.3]),
+            "kd_att": np.array([2.0, 2.0, 1.0]),
+            "kp_rate": np.array([0.25, 0.25, 0.2]),
+            "ki_rate": np.array([0.03, 0.03, 0.02]),
+            "kd_rate": np.array([0.1, 0.1, 0.06]),
+        },
+        enable_integral=True,
+        enable_anti_windup=True,
+        integral_limit=10.0,
+        enable_wind=False,
+        enable_sensor_noise=True,
+        duration=10.0,
+        expected_behavior="Drone maintains hover near the target but with visible small oscillations "
+                         "due to noisy measurements. Demonstrates robustness of the controller to "
+                         "sensor noise and the trade-off between filtering and responsiveness."
+    )
+
+
+def create_lateral_step_xy() -> Experiment:
+    """
+    Lateral Position Step Experiment
+    
+    Demonstrates: Lateral (X/Y) position control response to a step input.
+    Expected: Drone translates to a new X/Y position while holding altitude.
+    """
+    return Experiment(
+        name="lateral_step_xy",
+        description="Lateral position step from origin to (3 m, 2 m) at constant altitude",
+        controller_type="pid",
+        control_gains={
+            "kp_pos": np.array([2.5, 2.5, 5.0]),
+            "ki_pos": np.array([0.1, 0.1, 0.4]),
+            "kd_pos": np.array([0.6, 0.6, 2.0]),
+            "kp_att": np.array([8.0, 8.0, 5.0]),
+            "ki_att": np.array([0.5, 0.5, 0.3]),
+            "kd_att": np.array([2.0, 2.0, 1.0]),
+            "kp_rate": np.array([0.25, 0.25, 0.2]),
+            "ki_rate": np.array([0.03, 0.03, 0.02]),
+            "kd_rate": np.array([0.1, 0.1, 0.06]),
         },
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
         enable_wind=False,
         enable_sensor_noise=False,
-        duration=10.0,
-        expected_behavior="Fast response but with significant overshoot and oscillation. "
-                         "Shows why aggressive gains reduce robustness and stability margins."
+        initial_position=np.array([0.0, 0.0, 5.0]),
+        target_position=np.array([3.0, 2.0, 5.0]),
+        duration=12.0,
+        expected_behavior="From a hover at the origin, the drone performs a lateral step to (3 m, 2 m) "
+                         "while holding altitude at 5 m. Position plots in X/Y clearly show step response, "
+                         "including rise time, overshoot, and settling behavior."
     )
 
 

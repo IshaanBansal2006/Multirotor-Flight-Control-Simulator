@@ -32,6 +32,7 @@ from src.config import SIM_DT, UI_UPDATE_RATE, PLOT_HISTORY_LENGTH, HEX_RADIUS, 
 from src.experiments import get_experiment, list_experiments
 from src.simulator import Simulator
 from src.utils.math3d import quaternion_from_euler, rotation_matrix_from_quaternion
+from src.analysis import compute_rise_time, compute_overshoot, compute_settling_time
 from PySide6.QtGui import QWheelEvent
 
 
@@ -219,6 +220,11 @@ class ComparisonUI(QMainWindow):
         
         top_layout.addStretch()
         
+        # Reset camera button (resets both 3D views to default)
+        self.reset_camera_button = QPushButton("Reset Camera")
+        self.reset_camera_button.clicked.connect(self.reset_camera_views)
+        top_layout.addWidget(self.reset_camera_button)
+        
         self.start_button = QPushButton("Start Simulation")
         self.start_button.clicked.connect(self.start_simulation)
         top_layout.addWidget(self.start_button)
@@ -229,6 +235,12 @@ class ComparisonUI(QMainWindow):
         
         top_group.setLayout(top_layout)
         main_layout.addWidget(top_group)
+        
+        # Scenario description / expected behavior text
+        self.scenario_desc_label = QLabel("")
+        self.scenario_desc_label.setWordWrap(True)
+        self.scenario_desc_label.setStyleSheet("font-size: 11px; color: #dddddd;")
+        main_layout.addWidget(self.scenario_desc_label)
         
         # Main comparison area: Side-by-side
         comparison_splitter = QSplitter(Qt.Horizontal)
@@ -254,10 +266,6 @@ class ComparisonUI(QMainWindow):
         # Initialize wind vector field for both panels
         self.update_wind_vector_field(self.left_panel)
         self.update_wind_vector_field(self.right_panel)
-        
-        # Initialize wind vector field for both panels
-        self.update_wind_vector_field(self.left_panel)
-        self.update_wind_vector_field(self.right_panel)
     
     def create_simulator_panel(self, title, color):
         """Create a panel for one simulator."""
@@ -275,6 +283,17 @@ class ComparisonUI(QMainWindow):
         gain_label.setWordWrap(True)
         gain_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         title_layout.addWidget(gain_label)
+        
+        # Metrics display
+        metrics_label = QLabel(
+            "Metrics:\n"
+            "  Rise: -- s\n"
+            "  Overshoot: -- m\n"
+            "  Settling: -- s"
+        )
+        metrics_label.setWordWrap(True)
+        metrics_label.setStyleSheet("font-size: 11px; color: #cccccc;")
+        title_layout.addWidget(metrics_label)
         
         # Zoom controls
         zoom_layout = QHBoxLayout()
@@ -353,6 +372,7 @@ class ComparisonUI(QMainWindow):
         panel.att_plot = att_plot
         panel.motor_plot = motor_plot
         panel.gain_label = gain_label
+        panel.metrics_label = metrics_label
         
         # Initialize 3D visualization state
         panel.vehicle_mesh = None
@@ -401,6 +421,15 @@ class ComparisonUI(QMainWindow):
         if experiment_name:
             try:
                 self.current_experiment = get_experiment(experiment_name)
+                
+                # Update scenario description text
+                desc = self.current_experiment.description
+                expected = self.current_experiment.expected_behavior
+                self.scenario_desc_label.setText(
+                    f"<b>Description:</b> {desc}<br>"
+                    f"<b>Expected:</b> {expected}"
+                )
+                
                 self.reset_simulation()
                 # Update wind vector field visualization
                 self.update_wind_vector_field(self.left_panel)
@@ -596,9 +625,28 @@ class ComparisonUI(QMainWindow):
         self.update_plots(self.left_panel, self.data_conservative, "blue")
         self.update_plots(self.right_panel, self.data_aggressive, "red")
         
+        # Update simple metrics overlay (based on altitude response)
+        self.update_metrics_overlay(self.left_panel, self.data_conservative)
+        self.update_metrics_overlay(self.right_panel, self.data_aggressive)
+        
         # Update 3D visualizations
         self.update_3d_visualization(self.left_panel, state_cons)
         self.update_3d_visualization(self.right_panel, state_agg)
+    
+    def reset_camera_views(self):
+        """Reset both 3D cameras to the default position."""
+        for panel in [self.left_panel, self.right_panel]:
+            if not hasattr(panel, "view3d") or panel.view3d is None:
+                continue
+            view = panel.view3d
+            # Reset tracked camera state if using CustomGLViewWidget
+            if isinstance(view, CustomGLViewWidget):
+                view._camera_distance = 40.0
+                view._camera_elevation = 10.0
+                view._camera_azimuth = 45.0
+            # Reset panel camera distance used by zoom buttons
+            panel.camera_distance = 40.0
+            view.setCameraPosition(distance=40, elevation=10, azimuth=45)
     
     def create_arrow_mesh(self, direction, length=1.0):
         """Create a 3D arrow mesh pointing in the given direction."""
@@ -700,6 +748,40 @@ class ComparisonUI(QMainWindow):
                         panel.view3d.addItem(arrow_part)
                     
                     panel.wind_arrows.append(arrow_parts)
+
+    def update_metrics_overlay(self, panel, data):
+        """Compute and display simple step-response metrics for altitude."""
+        # Ensure label exists
+        if not hasattr(panel, "metrics_label"):
+            return
+        if self.current_experiment is None:
+            panel.metrics_label.setText(
+                "Metrics:\n  Rise: -- s\n  Overshoot: -- m\n  Settling: -- s"
+            )
+            return
+        if len(data["time"]) < 5:
+            # Not enough data yet
+            panel.metrics_label.setText(
+                "Metrics:\n  Rise: -- s\n  Overshoot: -- m\n  Settling: -- s"
+            )
+            return
+        
+        # Build numpy arrays
+        t = np.array(data["time"])
+        z = np.array(data["position"][2])
+        target_z = float(self.current_experiment.target_position[2])
+        
+        # Compute metrics using shared analysis utilities
+        rise = compute_rise_time(t, z, target_z)
+        overshoot = compute_overshoot(t, z, target_z)
+        settling = compute_settling_time(t, z, target_z)
+        
+        panel.metrics_label.setText(
+            f"Metrics (Z):\n"
+            f"  Rise: {rise:.2f} s\n"
+            f"  Overshoot: {overshoot:.2f} m\n"
+            f"  Settling: {settling:.2f} s"
+        )
     
     def zoom_camera(self, panel, factor):
         """Zoom camera in or out by a factor."""
@@ -718,11 +800,13 @@ class ComparisonUI(QMainWindow):
         panel.camera_distance = max(2.0, min(100.0, panel.camera_distance))
         
         # Set new camera position with updated distance
-        # Keep elevation at 10 (steeper overhead view) when zooming
+        # Keep using the current elevation/azimuth from the view
+        current_elevation = getattr(panel.view3d, "_camera_elevation", 10.0)
+        current_azimuth = getattr(panel.view3d, "_camera_azimuth", 45.0)
         panel.view3d.setCameraPosition(
             distance=panel.camera_distance,
-            elevation=10,
-            azimuth=45
+            elevation=current_elevation,
+            azimuth=current_azimuth
         )
     
     def update_data_buffer(self, data, state, time):
