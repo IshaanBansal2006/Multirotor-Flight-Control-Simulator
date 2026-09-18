@@ -65,11 +65,22 @@ CONSTANT_WIND_VELOCITY = np.array([0.0, 0.0, 0.0])  # m/s
 # Controller Default Gains
 # ============================================================================
 # Cascaded PID Controller
-# Tuned for stable hover - these gains work well for the hexacopter
 # Position gains: Higher Kp for z (altitude), moderate for x/y
-PID_POSITION_KP = np.array([2.0, 2.0, 5.0])  # x, y, z (higher z for altitude)
+# Chosen by a closed-loop sweep over kp against the estimator time constants,
+# scored on all four demo scenarios plus both gain variants of the noisy one
+# (docs/decisions/002). The shipped kp of 2.0 on x/y asked for more bandwidth
+# than 10 Hz GPS with a 0.5 m sigma can support: every candidate at or above
+# 1.2 lost control in at least one scenario, every candidate at 0.7 lost none.
+PID_POSITION_KP = np.array([0.7, 0.7, 5.0])  # x, y, z (higher z for altitude)
 PID_POSITION_KI = np.array([0.1, 0.1, 0.4])  # Moderate integral for steady-state accuracy
-PID_POSITION_KD = np.array([0.5, 0.5, 2.0])  # Damping (higher for z to prevent overshoot)
+
+# Position damping is DERIVED, not hand-picked. The outer loop closes as
+#     a = Kp * e - Kd * v   ->   omega_n = sqrt(Kp),  zeta = Kd / (2 sqrt(Kp))
+# so a target damping ratio fixes Kd for any Kp. The shipped Kd of
+# [0.5, 0.5, 2.0] was zeta 0.18 on x/y, which is why any lateral command
+# overshot far enough to hit the tilt limit and never recover.
+POSITION_DAMPING_RATIO = 0.9  # slightly under critical: fast, ~0.2% overshoot
+PID_POSITION_KD = 2.0 * POSITION_DAMPING_RATIO * np.sqrt(PID_POSITION_KP)
 
 # Attitude gains: Stronger for roll/pitch, moderate for yaw
 PID_ATTITUDE_KP = np.array([8.0, 8.0, 5.0])  # roll, pitch, yaw
@@ -84,6 +95,10 @@ PID_RATE_KD = np.array([0.1, 0.1, 0.06])  # Rate damping
 # Anti-windup
 INTEGRAL_SATURATION = 10.0
 DERIVATIVE_FILTER_TAU = 0.01  # Low-pass filter time constant for derivative
+
+# Attitude setpoint limits (src/controllers/attitude_setpoint.py)
+MAX_TILT_ANGLE = np.radians(30.0)  # largest tilt the position loop may command
+MIN_VERTICAL_ACCEL = 0.5 * GRAVITY  # never point the thrust vector below the horizon
 
 # ============================================================================
 # LQR Controller Parameters
@@ -120,8 +135,23 @@ GPS_DELAY_STEPS = 0
 # ============================================================================
 # Estimator Parameters
 # ============================================================================
-# Complementary filter
-COMP_FILTER_ALPHA = 0.98  # Weight for gyro (0-1, higher = trust gyro more)
+# Complementary filter. The accelerometer correction is applied as a RATE, so
+# the gain means the same thing at any loop frequency: radians of correction per
+# second per radian of tilt error. Measured flat-optimal between 0.4 and 8;
+# 2.0 gives 0.20 deg mean attitude error under full sensor noise against
+# 0.32 deg for pure gyro integration over the same 12 s window, and unlike pure
+# integration it bounds the drift over a long run.
+ATTITUDE_ACCEL_GAIN = 2.0
+
+# Alpha-beta position/velocity trackers (src/estimation/filters.py).
+# These are TIME CONSTANTS, not per-update blend fractions: the filter derives
+# alpha and beta from the interval each correction covers, so the same value
+# behaves the same way whether it is corrected at 200 Hz from the barometer or
+# at 10 Hz from GPS. Chosen by sweeping tau against the measured velocity-
+# estimate noise and step lag - see docs/decisions/002.
+EST_TAU_Z = 0.10   # altitude and vertical velocity (barometer, 200 Hz)
+EST_TAU_XY = 0.70  # horizontal position and velocity (GPS, 10 Hz)
+GPS_VELOCITY_GAIN = 0.35  # blend weight for the GPS velocity report
 
 # EKF (if implemented)
 EKF_PROCESS_NOISE = np.diag([0.01, 0.01, 0.01, 0.1, 0.1, 0.1, 0.001, 0.001, 0.001])

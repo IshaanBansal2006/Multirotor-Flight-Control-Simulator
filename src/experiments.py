@@ -13,6 +13,38 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+from src.config import (
+    PID_ATTITUDE_KD, PID_ATTITUDE_KI, PID_ATTITUDE_KP,
+    PID_POSITION_KI, PID_POSITION_KP,
+    PID_RATE_KD, PID_RATE_KI, PID_RATE_KP,
+    POSITION_DAMPING_RATIO,
+)
+
+
+def default_pid_gains(**overrides) -> Dict[str, np.ndarray]:
+    """The gain set from config.py, with the position damping derived from Kp.
+
+    Every scenario used to carry its own copy of all nine gain arrays, so a
+    change in config.py reached none of them. Deriving kd_pos here also means a
+    scenario cannot end up with a proportional gain and a damping gain that
+    disagree: pass kp_pos and kd_pos follows for the same damping ratio.
+    """
+    kp_pos = np.asarray(overrides.pop("kp_pos", PID_POSITION_KP), dtype=float)
+    gains = {
+        "kp_pos": kp_pos.copy(),
+        "ki_pos": PID_POSITION_KI.copy(),
+        "kd_pos": 2.0 * POSITION_DAMPING_RATIO * np.sqrt(kp_pos),
+        "kp_att": PID_ATTITUDE_KP.copy(),
+        "ki_att": PID_ATTITUDE_KI.copy(),
+        "kd_att": PID_ATTITUDE_KD.copy(),
+        "kp_rate": PID_RATE_KP.copy(),
+        "ki_rate": PID_RATE_KI.copy(),
+        "kd_rate": PID_RATE_KD.copy(),
+    }
+    gains.update({key: np.asarray(value, dtype=float).copy()
+                  for key, value in overrides.items()})
+    return gains
+
 
 @dataclass
 class Experiment:
@@ -118,17 +150,7 @@ def create_nominal_hover() -> Experiment:
         name="nominal_hover",
         description="Stable hover with conservative, well-tuned gains",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.0, 2.0, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.5, 0.5, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        control_gains=default_pid_gains(),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
@@ -151,17 +173,7 @@ def create_hover_with_sensor_noise() -> Experiment:
         name="hover_with_sensor_noise",
         description="Stable hover with moderate sensor noise enabled",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.0, 2.0, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.5, 0.5, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        control_gains=default_pid_gains(),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
@@ -185,17 +197,11 @@ def create_lateral_step_xy() -> Experiment:
         name="lateral_step_xy",
         description="Lateral position step from origin to (3 m, 2 m) at constant altitude",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.5, 2.5, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.6, 0.6, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        # A quarter more x/y bandwidth than the tuned baseline, expressed as a
+        # multiplier so it tracks any future retune instead of pinning a number.
+        control_gains=default_pid_gains(
+            kp_pos=PID_POSITION_KP * np.array([1.25, 1.25, 1.0])
+        ),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
@@ -216,17 +222,7 @@ def create_wind_gust_left() -> Experiment:
         name="wind_gust_left",
         description="Wind gust from left",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.0, 2.0, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.5, 0.5, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        control_gains=default_pid_gains(),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
@@ -247,17 +243,7 @@ def create_wind_gust_right() -> Experiment:
         name="wind_gust_right",
         description="Wind gust from right",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.0, 2.0, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.5, 0.5, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        control_gains=default_pid_gains(),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
@@ -278,17 +264,7 @@ def create_wind_gust_front() -> Experiment:
         name="wind_gust_front",
         description="Wind gust from front",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.0, 2.0, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.5, 0.5, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        control_gains=default_pid_gains(),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
@@ -309,17 +285,7 @@ def create_wind_gust_back() -> Experiment:
         name="wind_gust_back",
         description="Wind gust from back",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.0, 2.0, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.5, 0.5, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        control_gains=default_pid_gains(),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
@@ -340,17 +306,7 @@ def create_wind_gust_down() -> Experiment:
         name="wind_gust_down",
         description="Wind gust downward",
         controller_type="pid",
-        control_gains={
-            "kp_pos": np.array([2.0, 2.0, 5.0]),
-            "ki_pos": np.array([0.1, 0.1, 0.4]),
-            "kd_pos": np.array([0.5, 0.5, 2.0]),
-            "kp_att": np.array([8.0, 8.0, 5.0]),
-            "ki_att": np.array([0.5, 0.5, 0.3]),
-            "kd_att": np.array([2.0, 2.0, 1.0]),
-            "kp_rate": np.array([0.25, 0.25, 0.2]),
-            "ki_rate": np.array([0.03, 0.03, 0.02]),
-            "kd_rate": np.array([0.1, 0.1, 0.06]),
-        },
+        control_gains=default_pid_gains(),
         enable_integral=True,
         enable_anti_windup=True,
         integral_limit=10.0,
