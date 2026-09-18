@@ -6,7 +6,9 @@ true state, which is then used by the controller.
 """
 
 import numpy as np
-from src.config import COMP_FILTER_ALPHA, GRAVITY
+from src.config import (
+    ATTITUDE_ACCEL_GAIN, EST_TAU_XY, EST_TAU_Z, GPS_VELOCITY_GAIN, GRAVITY
+)
 from src.utils.math3d import (
     quaternion_from_euler, euler_from_quaternion, quaternion_multiply,
     quaternion_normalize, rotation_matrix_from_quaternion
@@ -25,7 +27,7 @@ class ComplementaryFilter:
     
     def __init__(self):
         """Initialize complementary filter."""
-        self.alpha = COMP_FILTER_ALPHA  # Trust gyro more (0-1)
+        self.accel_gain = ATTITUDE_ACCEL_GAIN
         self.attitude_quat = np.array([1.0, 0.0, 0.0, 0.0])  # Identity
     
     def update(self, gyro, accel, dt):
@@ -51,44 +53,99 @@ class ComplementaryFilter:
         # At hover, accelerometer should read [0, 0, g] in body frame
         # This gives us roll and pitch (but not yaw)
         accel_norm = np.linalg.norm(accel)
-        if accel_norm > 0.1:  # Only use if significant acceleration
-            # Normalize accelerometer reading
-            accel_normalized = accel / accel_norm
-            
-            # Expected gravity direction in body frame (from predicted attitude)
+        # Only trust the accelerometer as a gravity reference when it reads
+        # close to 1 g. Under sustained acceleration it is measuring something
+        # else and would tilt the estimate.
+        if abs(accel_norm - GRAVITY) < 0.2 * GRAVITY:
+            measured_gravity_body = accel / accel_norm
+
+            # Where the current estimate says gravity should point, in body axes
             R_pred = rotation_matrix_from_quaternion(predicted_quat)
-            gravity_world = np.array([0.0, 0.0, -1.0])  # Downward
-            expected_gravity_body = R_pred.T @ gravity_world
-            
-            # Compute error
-            error = np.cross(expected_gravity_body, accel_normalized)
-            
-            # Convert error to quaternion correction (small angle approximation)
-            # Error is the cross product, which gives us the axis and magnitude
-            correction_angle = np.linalg.norm(error)
-            if correction_angle > 0.01:
-                correction_axis = error / correction_angle
-                # Small angle correction: create quaternion from axis-angle
-                # For small angles: q ≈ [1, axis_x*angle/2, axis_y*angle/2, axis_z*angle/2]
-                correction_angle_scaled = correction_angle * (1 - self.alpha) * 0.1
-                half_angle = correction_angle_scaled * 0.5
-                correction_quat = np.array([
-                    1.0,  # w (cos(half_angle) ≈ 1 for small angles)
-                    correction_axis[0] * half_angle,
-                    correction_axis[1] * half_angle,
-                    correction_axis[2] * half_angle
-                ])
-                correction_quat = quaternion_normalize(correction_quat)
-                # Apply correction
-                predicted_quat = quaternion_multiply(predicted_quat, correction_quat)
+            expected_gravity_body = R_pred.T @ np.array([0.0, 0.0, -1.0])
+
+            # Body-frame rotation that carries the expected direction onto the
+            # measured one. cross(measured, expected) is the correct order:
+            # cross(expected, measured) turns this correction into positive
+            # feedback, which is why the estimate used to wander by a few
+            # degrees and would flip outright at any useful gain.
+            error = np.cross(measured_gravity_body, expected_gravity_body)
+
+            # Applied as a rate, so the gain means the same thing at any loop
+            # frequency: ATTITUDE_ACCEL_GAIN radians of correction per second
+            # per radian of error.
+            half_angle = 0.5 * self.accel_gain * dt
+            correction_quat = quaternion_normalize(np.array([
+                1.0,
+                error[0] * half_angle,
+                error[1] * half_angle,
+                error[2] * half_angle,
+            ]))
+            predicted_quat = quaternion_multiply(predicted_quat, correction_quat)
         
-        # Fuse: weighted combination
-        # For simplicity, we trust the gyro prediction mostly (alpha close to 1)
-        # The correction from accelerometer is already applied above
         self.attitude_quat = predicted_quat
         self.attitude_quat = quaternion_normalize(self.attitude_quat)
         
         return self.attitude_quat
+
+
+class AlphaBetaTracker:
+    """Critically damped alpha-beta tracker for one axis of a constant-velocity target.
+
+    Tuned by a time constant rather than by per-update blend fractions, because
+    the gains have to be derived from the interval they are applied over. With
+    r = exp(-dt / tau):
+
+        alpha = 1 - r^2          position correction
+        beta  = (1 - r)^2        velocity correction, applied as beta / dt
+
+    The same tau therefore behaves the same way whether the filter is corrected
+    at 200 Hz from the barometer or at 10 Hz from GPS. Writing alpha and beta as
+    constants instead makes the velocity gain beta/dt scale with the loop rate,
+    which is how a 0.5 m barometer sigma turned into a 33 m/s velocity estimate.
+
+    The accelerometer in this simulator reports gravity only (see
+    estimation/sensors.py), so there is no translational acceleration to
+    integrate and a constant-velocity model is the most this sensor suite
+    supports.
+    """
+
+    def __init__(self, tau, position=0.0, velocity=0.0):
+        self.tau = float(tau)
+        self.position = float(position)
+        self.velocity = float(velocity)
+        self.time_since_correction = 0.0
+
+    def gains(self, dt):
+        """Alpha and beta for a correction interval of ``dt`` seconds."""
+        decay = np.exp(-dt / self.tau)
+        alpha = 1.0 - decay * decay
+        beta = (1.0 - decay) ** 2
+        return alpha, beta
+
+    def predict(self, dt):
+        """Dead reckon forward. Called every control step, measurement or not."""
+        self.position += self.velocity * dt
+        self.time_since_correction += dt
+
+    def correct(self, measurement):
+        """Fold in one position measurement, using the interval since the last."""
+        dt = self.time_since_correction
+        if dt <= 1e-9:
+            return
+        alpha, beta = self.gains(dt)
+        residual = measurement - self.position
+        self.position += alpha * residual
+        self.velocity += (beta / dt) * residual
+        self.time_since_correction = 0.0
+
+    def nudge_velocity(self, measurement, gain):
+        """Blend in a direct velocity measurement (GPS reports one)."""
+        self.velocity += gain * (measurement - self.velocity)
+
+    def reset(self, position=0.0, velocity=0.0):
+        self.position = float(position)
+        self.velocity = float(velocity)
+        self.time_since_correction = 0.0
 
 
 class SimpleEstimator:
@@ -103,17 +160,23 @@ class SimpleEstimator:
     def __init__(self):
         """Initialize estimator."""
         self.attitude_filter = ComplementaryFilter()
-        
-        # Position/velocity estimates
-        self.position = np.array([0.0, 0.0, 5.0])
-        self.velocity = np.array([0.0, 0.0, 0.0])
-        
-        # Alpha-beta filter parameters
-        self.alpha_pos = 0.7  # Position gain
-        self.beta_pos = 0.3   # Velocity gain
-        
-        # Last GPS update
-        self.last_gps_time = 0.0
+
+        # One tracker per axis. Altitude is corrected from the barometer at the
+        # control rate; x and y are dead reckoned between GPS fixes and
+        # corrected when one arrives.
+        self.trackers = [
+            AlphaBetaTracker(EST_TAU_XY),
+            AlphaBetaTracker(EST_TAU_XY),
+            AlphaBetaTracker(EST_TAU_Z, position=5.0),
+        ]
+    
+    @property
+    def position(self):
+        return np.array([t.position for t in self.trackers])
+    
+    @property
+    def velocity(self):
+        return np.array([t.velocity for t in self.trackers])
     
     def update(self, sensors, dt):
         """
@@ -129,26 +192,23 @@ class SimpleEstimator:
         # Update attitude using complementary filter
         attitude_quat = self.attitude_filter.update(sensors['gyro'], sensors['accel'], dt)
         
-        # Altitude and vertical velocity: alpha-beta filter on the barometer.
-        # Predict with the current velocity, then correct both states from the
-        # same residual. Deriving the velocity from the already-corrected
-        # position instead divides the correction by dt and turns the
-        # barometer noise into a velocity estimate 1/dt times too large.
-        if dt > 1e-6:
-            predicted_z = self.position[2] + self.velocity[2] * dt
-            residual_z = sensors['baro'] - predicted_z
-            self.position[2] = predicted_z + self.alpha_pos * residual_z
-            self.velocity[2] += (self.beta_pos / dt) * residual_z
-        
-        # Use GPS for horizontal position/velocity when available
+        # Dead reckon every axis forward, then correct the ones that have a
+        # measurement this step.
+        for tracker in self.trackers:
+            tracker.predict(dt)
+
+        # Altitude from the barometer, every step. GPS also reports z with the
+        # same sigma but at a twentieth of the rate, so folding it into the
+        # altitude estimate would only add noise; it is deliberately unused.
+        self.trackers[2].correct(sensors['baro'])
+
         if sensors['gps_available'] and sensors['gps_position'] is not None:
-            # Alpha-beta filter update
-            pos_error = sensors['gps_position'] - self.position
-            self.position += self.alpha_pos * pos_error
-            
+            for axis in (0, 1):
+                self.trackers[axis].correct(sensors['gps_position'][axis])
             if sensors['gps_velocity'] is not None:
-                vel_error = sensors['gps_velocity'] - self.velocity
-                self.velocity += self.beta_pos * vel_error
+                for axis in (0, 1):
+                    self.trackers[axis].nudge_velocity(
+                        sensors['gps_velocity'][axis], GPS_VELOCITY_GAIN)
         
         # Convert quaternion to Euler for rates estimate
         # For rates, we can use the gyro directly (it's already in body frame)
@@ -164,8 +224,11 @@ class SimpleEstimator:
     def reset(self, initial_position=None, initial_attitude=None):
         """Reset estimator to initial state."""
         if initial_position is not None:
-            self.position = np.array(initial_position)
+            for tracker, value in zip(self.trackers, np.asarray(initial_position, dtype=float)):
+                tracker.reset(position=value)
+        else:
+            for tracker in self.trackers:
+                tracker.reset(position=tracker.position)
         if initial_attitude is not None:
             self.attitude_filter.attitude_quat = quaternion_normalize(np.array(initial_attitude))
-        self.velocity = np.array([0.0, 0.0, 0.0])
 

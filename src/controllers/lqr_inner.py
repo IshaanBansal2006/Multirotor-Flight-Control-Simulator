@@ -11,6 +11,7 @@ The system is linearized around hover (small angles assumption).
 """
 
 import numpy as np
+from src.controllers.attitude_setpoint import thrust_vector_setpoint
 from scipy.linalg import solve_continuous_are
 from src.config import HEX_INERTIA, LQR_Q, LQR_R
 from src.utils.math3d import euler_from_quaternion
@@ -143,14 +144,14 @@ class LQRInnerController:
         )
         
         # Convert to desired attitude
-        from src.config import GRAVITY
-        desired_roll = -desired_accel[1] / GRAVITY
-        desired_pitch = desired_accel[0] / GRAVITY
-        max_angle = np.radians(30)
-        desired_roll = np.clip(desired_roll, -max_angle, max_angle)
-        desired_pitch = np.clip(desired_pitch, -max_angle, max_angle)
+        # Same conversion the cascaded PID uses; see
+        # controllers/attitude_setpoint.py for the convention and the reason it
+        # is the exact inverse rather than the small-angle one.
+        setpoint = thrust_vector_setpoint(desired_accel, yaw, self.mass)
+        desired_roll = setpoint.roll
+        desired_pitch = setpoint.pitch
         
-        desired_thrust = self.mass * (GRAVITY + desired_accel[2])
+        desired_thrust = setpoint.thrust
         
         # ====================================================================
         # Inner Loop: LQR Controller

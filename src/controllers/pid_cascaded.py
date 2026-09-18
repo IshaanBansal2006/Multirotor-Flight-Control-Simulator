@@ -14,11 +14,13 @@ This cascaded structure is common in multirotor control because:
 
 import numpy as np
 from src.config import (
+    HEX_MASS,
     PID_POSITION_KP, PID_POSITION_KI, PID_POSITION_KD,
     PID_ATTITUDE_KP, PID_ATTITUDE_KI, PID_ATTITUDE_KD,
     PID_RATE_KP, PID_RATE_KI, PID_RATE_KD,
     DERIVATIVE_FILTER_TAU, GRAVITY
 )
+from src.controllers.attitude_setpoint import thrust_vector_setpoint
 from src.utils.math3d import euler_from_quaternion
 
 
@@ -83,6 +85,13 @@ class CascadedPIDController:
         # Target setpoints
         self.target_position = np.array([0.0, 0.0, 5.0])
         self.target_yaw = 0.0
+
+        # Saturation flags from the previous step, used for conditional
+        # anti-windup: an axis whose command is already clipped must not keep
+        # integrating, or the integrator winds up while the vehicle cannot act
+        # on it and then overshoots on the way back.
+        self.tilt_saturated = False
+        self.thrust_saturated = False
     
     def update(self, estimated_state, dt):
         """
@@ -112,10 +121,16 @@ class CascadedPIDController:
         
         # Update integral (with optional anti-windup)
         if self.enable_integral:
-            self.integral_pos += error_pos * dt
-            # Anti-windup: clamp integral to prevent windup when actuators saturate
-            # Without anti-windup, integrator accumulates error even when control
-            # is saturated, causing overshoot and poor recovery
+            gate = np.ones(3)
+            if self.enable_anti_windup:
+                # Conditional integration: hold the axes that were saturated on
+                # the previous step. Clamping alone still lets the integrator
+                # fill up while the vehicle cannot follow the command.
+                if self.tilt_saturated:
+                    gate[0] = gate[1] = 0.0
+                if self.thrust_saturated:
+                    gate[2] = 0.0
+            self.integral_pos += error_pos * dt * gate
             if self.enable_anti_windup:
                 self.integral_pos = np.clip(
                     self.integral_pos,
@@ -142,18 +157,17 @@ class CascadedPIDController:
             self.kd_pos * self.filtered_derivative_pos
         )
         
-        # Convert desired acceleration to desired attitude and thrust
-        # For small angles: desired roll = -desired_accel_y / g
-        #                   desired pitch = desired_accel_x / g
-        # Total thrust compensates for gravity + desired z acceleration
-        desired_roll = -desired_accel[1] / GRAVITY
-        desired_pitch = desired_accel[0] / GRAVITY
-        desired_thrust = self.mass * (GRAVITY + desired_accel[2])
-        
-        # Clamp desired roll/pitch to reasonable limits (±30 degrees)
-        max_angle = np.radians(30)
-        desired_roll = np.clip(desired_roll, -max_angle, max_angle)
-        desired_pitch = np.clip(desired_pitch, -max_angle, max_angle)
+        # Convert the desired acceleration into a thrust-vector setpoint. This
+        # is the exact inverse rather than the small-angle one, so the
+        # collective carries its own 1/cos(tilt) term and the horizontal
+        # command is limited against the vertical component before the angles
+        # are computed. See controllers/attitude_setpoint.py.
+        setpoint = thrust_vector_setpoint(desired_accel, yaw, self.mass)
+        desired_roll = setpoint.roll
+        desired_pitch = setpoint.pitch
+        desired_thrust = setpoint.thrust
+        self.tilt_saturated = setpoint.tilt_saturated
+        self.thrust_saturated = desired_thrust >= self.max_total_thrust
         
         # ====================================================================
         # Middle Loop: Attitude Controller
@@ -258,12 +272,20 @@ class CascadedPIDController:
         self.integral_pos = np.zeros(3)
         self.integral_att = np.zeros(3)
         self.integral_rate = np.zeros(3)
+        self.tilt_saturated = False
+        self.thrust_saturated = False
     
     @property
     def mass(self):
-        """Get vehicle mass (needed for thrust calculation)."""
-        # This should be passed in or accessed from vehicle
-        # For now, use default
-        from src.config import HEX_MASS
-        return HEX_MASS
+        """Vehicle mass, from the mixer's vehicle."""
+        vehicle = getattr(self.mixer, "vehicle", None)
+        return vehicle.mass if vehicle is not None else HEX_MASS
+
+    @property
+    def max_total_thrust(self):
+        """Largest collective the mixer can actually deliver."""
+        vehicle = getattr(self.mixer, "vehicle", None)
+        if vehicle is None:
+            return float("inf")
+        return vehicle.num_motors * vehicle.motor_max_thrust
 
