@@ -129,13 +129,16 @@ class SimpleEstimator:
         # Update attitude using complementary filter
         attitude_quat = self.attitude_filter.update(sensors['gyro'], sensors['accel'], dt)
         
-        # Update position/velocity
-        # Use barometer for altitude
-        self.position[2] = self.alpha_pos * sensors['baro'] + (1 - self.alpha_pos) * (self.position[2] + self.velocity[2] * dt)
-        
-        # Estimate vertical velocity from barometer
-        baro_velocity = (sensors['baro'] - self.position[2]) / dt if dt > 1e-6 else 0.0
-        self.velocity[2] = self.beta_pos * baro_velocity + (1 - self.beta_pos) * self.velocity[2]
+        # Altitude and vertical velocity: alpha-beta filter on the barometer.
+        # Predict with the current velocity, then correct both states from the
+        # same residual. Deriving the velocity from the already-corrected
+        # position instead divides the correction by dt and turns the
+        # barometer noise into a velocity estimate 1/dt times too large.
+        if dt > 1e-6:
+            predicted_z = self.position[2] + self.velocity[2] * dt
+            residual_z = sensors['baro'] - predicted_z
+            self.position[2] = predicted_z + self.alpha_pos * residual_z
+            self.velocity[2] += (self.beta_pos / dt) * residual_z
         
         # Use GPS for horizontal position/velocity when available
         if sensors['gps_available'] and sensors['gps_position'] is not None:

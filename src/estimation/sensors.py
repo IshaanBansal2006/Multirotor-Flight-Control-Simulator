@@ -19,14 +19,18 @@ class SensorSimulator:
     Simulates sensors with noise, bias, and delays.
     """
     
-    def __init__(self, enable_noise=True):
+    def __init__(self, enable_noise=True, seed=None):
         """
         Initialize sensor simulator.
         
         Args:
             enable_noise: Whether to add noise to measurements
+            seed: Seed for the sensor noise generator. None draws from the OS
+                entropy source, so runs are not reproducible; pass an int to
+                make a run repeatable.
         """
         self.enable_noise = enable_noise
+        self.rng = np.random.default_rng(seed)
         
         # Gyro bias (drifts over time)
         self.gyro_bias = np.array([0.0, 0.0, 0.0])
@@ -51,13 +55,15 @@ class SensorSimulator:
         Returns:
             Dict with sensor measurements
         """
-        # Update gyro bias (drift)
-        self.gyro_bias += np.random.normal(0, GYRO_BIAS_DRIFT * dt, 3)
+        # Update gyro bias (drift). Bias drift is part of the noise model, so
+        # it must not accumulate when noise is disabled.
+        if self.enable_noise:
+            self.gyro_bias += self.rng.normal(0, GYRO_BIAS_DRIFT * dt, 3)
         
         # IMU: Gyroscope
         gyro_true = true_state['rates'].copy()
         if self.enable_noise:
-            gyro_noise = np.random.normal(0, GYRO_NOISE_STD, 3)
+            gyro_noise = self.rng.normal(0, GYRO_NOISE_STD, 3)
             gyro = gyro_true + self.gyro_bias + gyro_noise
         else:
             gyro = gyro_true + self.gyro_bias
@@ -72,7 +78,7 @@ class SensorSimulator:
         # Add acceleration from motion (simplified)
         accel_body = gravity_body.copy()
         if self.enable_noise:
-            accel_noise = np.random.normal(0, ACCEL_NOISE_STD, 3)
+            accel_noise = self.rng.normal(0, ACCEL_NOISE_STD, 3)
             accel_body += accel_noise
             accel_body += ACCEL_BIAS
         else:
@@ -81,7 +87,7 @@ class SensorSimulator:
         # Barometer: Altitude (z position)
         baro_true = true_state['position'][2]
         if self.enable_noise:
-            baro = baro_true + np.random.normal(BARO_BIAS, BARO_NOISE_STD)
+            baro = baro_true + self.rng.normal(BARO_BIAS, BARO_NOISE_STD)
         else:
             baro = baro_true + BARO_BIAS
         
@@ -96,8 +102,8 @@ class SensorSimulator:
             gps_available = True
             
             if self.enable_noise:
-                gps_position = true_state['position'] + np.random.normal(0, GPS_POSITION_NOISE_STD, 3)
-                gps_velocity = true_state['velocity'] + np.random.normal(0, GPS_VELOCITY_NOISE_STD, 3)
+                gps_position = true_state['position'] + self.rng.normal(0, GPS_POSITION_NOISE_STD, 3)
+                gps_velocity = true_state['velocity'] + self.rng.normal(0, GPS_VELOCITY_NOISE_STD, 3)
             else:
                 gps_position = true_state['position'].copy()
                 gps_velocity = true_state['velocity'].copy()

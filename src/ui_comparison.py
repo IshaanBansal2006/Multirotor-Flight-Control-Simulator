@@ -188,15 +188,16 @@ class ComparisonUI(QMainWindow):
         self.running = False
         self.sim_time = 0.0
         
-        self.setup_ui()
-        
-        # Timer for simulation steps
+        # Timers must exist before setup_ui(): building the UI selects the first
+        # scenario, which resets the simulation and stops the sim timer.
         self.sim_timer = QTimer()
         self.sim_timer.timeout.connect(self.update_simulation)
         
-        # Timer for UI updates
         self.ui_timer = QTimer()
         self.ui_timer.timeout.connect(self.update_ui)
+        
+        self.setup_ui()
+        
         self.ui_timer.start(int(1000 / UI_UPDATE_RATE))
     
     def setup_ui(self):

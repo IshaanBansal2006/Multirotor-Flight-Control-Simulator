@@ -26,8 +26,14 @@ class Simulator:
     Main simulator that coordinates all components.
     """
     
-    def __init__(self, enable_logging=True):
-        """Initialize simulator."""
+    def __init__(self, enable_logging=True, seed=None):
+        """
+        Initialize simulator.
+
+        Args:
+            enable_logging: Whether to log every timestep for later export
+            seed: Seed for the sensor noise generator, for repeatable runs
+        """
         # Create vehicle
         self.vehicle = Hexacopter()
         
@@ -44,7 +50,7 @@ class Simulator:
         self.controller_mode = "pid"
         
         # Create sensors and estimator
-        self.sensors = SensorSimulator(enable_noise=True)
+        self.sensors = SensorSimulator(enable_noise=True, seed=seed)
         self.estimator = SimpleEstimator()
         
         # Initialize estimator with true initial state
@@ -64,6 +70,7 @@ class Simulator:
         # Wind disturbance
         self.wind_force = np.array([0.0, 0.0, 0.0])
         self.wind_gust_active = False
+        self.wind_gust_injected = False
         self.wind_gust_start_time = 0.0
         self.wind_gust_direction = np.array([0.0, 0.0, 0.0])
         self.wind_gust_duration = WIND_GUST_DURATION
@@ -104,11 +111,12 @@ class Simulator:
         # Step dynamics
         self.dynamics.step(SIM_DT, self.wind_force)
         
-        # Log data (get final states after step)
+        # Log data. The sensors and the estimator run exactly once per timestep:
+        # sampling them again here would advance the estimator at twice the
+        # control rate and log a state the controller never saw.
         true_state_final = self.dynamics.get_state()
-        sensor_measurements_final = self.sensors.update(true_state_final, SIM_DT)
-        estimated_state_final = self.estimator.update(sensor_measurements_final, SIM_DT)
-        
+        estimated_state_final = estimated_state
+
         # Convert attitude to Euler for logging
         roll, pitch, yaw = euler_from_quaternion(true_state_final['attitude'])
         true_state_log = {
@@ -174,6 +182,7 @@ class Simulator:
         if duration is not None:
             self.wind_gust_duration = duration
         self.wind_gust_active = True
+        self.wind_gust_injected = True
         self.wind_gust_start_time = self.time
     
     def set_target(self, position, yaw=None):
@@ -276,7 +285,10 @@ class Simulator:
                 'settling_time': settling_time,
                 'max_attitude_error': np.degrees(max_att_error),
                 'max_wind_response': max_wind_response,
-                'gust_responses': ["Wind gust injected during simulation"]
+                'gust_responses': (
+                    ["Wind gust injected during simulation"]
+                    if self.wind_gust_injected else []
+                )
             }
             
             # Generate summary

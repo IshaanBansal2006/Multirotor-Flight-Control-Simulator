@@ -5,7 +5,8 @@ Vehicle models: hexacopter geometry and parameters.
 import numpy as np
 from src.config import (
     HEX_RADIUS, HEX_MASS, HEX_INERTIA, HEX_MOTOR_ANGLES,
-    HEX_MOTOR_DIRECTIONS, MOTOR_MAX_THRUST, ROTOR_DRAG_COEFFICIENT
+    HEX_MOTOR_DIRECTIONS, MOTOR_MAX_THRUST, MOTOR_MIN_THRUST,
+    ROTOR_DRAG_COEFFICIENT
 )
 
 
@@ -72,14 +73,13 @@ class Hexacopter:
             # Total thrust (all motors contribute equally)
             M[0, i] = 1.0
             
-            # Roll torque (tau_x): moment about x-axis
-            # tau = r x F, where r is position and F is thrust in +z direction
-            # For roll: we want torque about x-axis, which comes from y-component of position
-            M[1, i] = -pos[1]  # Negative because positive y gives negative roll
-            
-            # Pitch torque (tau_y): moment about y-axis
-            # For pitch: torque comes from x-component of position
-            M[2, i] = pos[0]  # Positive x gives positive pitch
+            # Roll torque (tau_x) and pitch torque (tau_y) come from tau = r x F
+            # with F = [0, 0, T] in the body frame:
+            #   r x F = [ry * T, -rx * T, 0]
+            # These must match dynamics._compute_motor_torques exactly; a sign
+            # disagreement inverts the attitude loop into positive feedback.
+            M[1, i] = pos[1]
+            M[2, i] = -pos[0]
             
             # Yaw torque (tau_z): reaction torque from motor spin
             # Motors spinning CCW (+1) produce positive yaw torque
@@ -102,6 +102,14 @@ class Hexacopter:
         Returns:
             Motor thrusts [T1, T2, ..., T6] (N)
         """
+        # Fixed-pitch rotors cannot pull, and six of them cannot exceed
+        # 6 * motor_max_thrust. Clamping the collective before allocation keeps
+        # an unachievable demand from being spread across the motors and then
+        # clipped per motor, which silently destroys roll/pitch authority.
+        total_min = self.num_motors * MOTOR_MIN_THRUST
+        total_max = self.num_motors * self.motor_max_thrust
+        desired_thrust = float(np.clip(desired_thrust, total_min, total_max))
+
         # Desired forces/torques vector
         desired = np.array([
             desired_thrust,
